@@ -36,8 +36,8 @@ dev: ## Run FastAPI and React together; Ctrl-C stops both
 	@if lsof -nP -iTCP:$(WEB_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
 	  echo "Port $(WEB_PORT) is already in use. Override it with WEB_PORT=5174."; exit 1; \
 	fi
-	@(cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(API_PORT)) & api_pid=$$!; \
-	  (cd $(FRONTEND_DIR) && VITE_API_TARGET=http://127.0.0.1:$(API_PORT) npm run dev -- --host 127.0.0.1 --port $(WEB_PORT)) & web_pid=$$!; \
+	@(cd $(BACKEND_DIR) && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port $(API_PORT)) & api_pid=$$!; \
+	  (cd $(FRONTEND_DIR) && VITE_API_TARGET=http://0.0.0.0:$(API_PORT) npm run dev -- --host 0.0.0.0 --port $(WEB_PORT)) & web_pid=$$!; \
 	  trap 'kill $$api_pid $$web_pid 2>/dev/null || true' INT TERM EXIT; \
 	  wait
 

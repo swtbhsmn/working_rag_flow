@@ -22,6 +22,8 @@ services:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - nginxpm_shared_network
 
   web:
     build: ./frontend
@@ -29,3 +31,9 @@ services:
       - api
     ports:
       - "8088:80"
+    networks:
+      - nginxpm_shared_network
+
+networks:
+  nginxpm_shared_network:
+    external: true
