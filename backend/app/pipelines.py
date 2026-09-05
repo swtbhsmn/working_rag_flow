@@ -120,24 +120,53 @@ class Pipeline:
             self.emit(job_id, "validation", "started", filename=document["filename"])
             if not path.exists() or path.stat().st_size == 0:
                 raise ValueError("Uploaded file is empty or missing")
-            self.emit(job_id, "validation", "completed", size_bytes=path.stat().st_size, media_type=document["media_type"])
+            self.emit(
+                job_id, "validation", "completed",
+                input={"filename": document["filename"], "media_type": document["media_type"], "size_bytes": path.stat().st_size},
+                process="Verify that the staged file exists, is non-empty, and matches the accepted upload constraints.",
+                output={"valid": True, "safe_filename": Path(document["filename"]).name},
+                size_bytes=path.stat().st_size, media_type=document["media_type"],
+            )
 
             self.emit(job_id, "extraction", "started")
             pages = await asyncio.to_thread(extract_document, path, path.suffix.lower())
             raw_text = "\n\n".join(str(page["text"]) for page in pages)
-            self.emit(job_id, "extraction", "completed", pages=len(pages), preview=raw_text[:600], characters=len(raw_text))
+            self.emit(
+                job_id, "extraction", "completed",
+                input={"media_type": document["media_type"], "bytes": path.stat().st_size},
+                process="Parse the file by type and preserve page boundaries while extracting text.",
+                output={"pages": len(pages), "characters": len(raw_text), "preview": raw_text[:600]},
+                pages=len(pages), preview=raw_text[:600], characters=len(raw_text),
+            )
 
             self.emit(job_id, "cleaning", "started", before=raw_text[:300])
             cleaned_pages = [{"page": page["page"], "text": clean_text(str(page["text"]))} for page in pages]
             cleaned_text = "\n\n".join(str(page["text"]) for page in cleaned_pages if page["text"])
             stats = text_statistics(cleaned_text)
             unit_count = sum(len(structured_units(str(page["text"]))) for page in cleaned_pages)
-            self.emit(job_id, "cleaning", "completed", after=cleaned_text[:300], removed_characters=len(raw_text) - len(cleaned_text))
-            self.emit(job_id, "segmentation", "completed", **stats, structural_units=unit_count, strategy="headings → paragraphs → sentences → token fallback")
+            self.emit(
+                job_id, "cleaning", "completed",
+                input={"characters": len(raw_text), "preview": raw_text[:300]},
+                process="Normalize Unicode whitespace, line endings, blank lines, and non-content control characters.",
+                output={"characters": len(cleaned_text), "removed_characters": len(raw_text) - len(cleaned_text), "preview": cleaned_text[:300]},
+                after=cleaned_text[:300], removed_characters=len(raw_text) - len(cleaned_text),
+            )
+            self.emit(
+                job_id, "structure", "completed",
+                input={"pages": len(cleaned_pages), "characters": len(cleaned_text)},
+                process="Detect headings, paragraphs, and sentence boundaries before falling back to token windows.",
+                output={**stats, "structural_units": unit_count},
+                **stats, structural_units=unit_count, strategy="headings → paragraphs → sentences → token fallback",
+            )
 
             chunk_size = int(document["chunk_size"])
             overlap = int(document["chunk_overlap"])
-            self.emit(job_id, "tokenization", "started", chunk_size=chunk_size, overlap=overlap)
+            self.emit(
+                job_id, "chunking", "started",
+                input={"characters": len(cleaned_text), "structural_units": unit_count},
+                process="Pack structural units into bounded token windows and carry overlap into the next chunk.",
+                chunk_size=chunk_size, overlap=overlap,
+            )
             chunk_specs: list[dict[str, Any]] = []
             total_tokens = 0
             for page in cleaned_pages:
@@ -148,22 +177,57 @@ class Pipeline:
                 chunk_specs.extend(await self._chunk_page(str(page["text"]), int(page["page"]), chunk_size, overlap))
             if not chunk_specs:
                 raise ValueError("Tokenization produced no chunks")
+            overlap_example = {
+                "token_ids": chunk_specs[1]["overlap_token_ids"],
+                "text": await self.llama.detokenize(chunk_specs[1]["overlap_token_ids"], "embedding") if chunk_specs[1]["overlap_token_ids"] else "",
+                "from_chunk": 1, "into_chunk": 2,
+            } if len(chunk_specs) > 1 else None
+            chunk_preview = [
+                {
+                    "chunk_index": index,
+                    "page": spec["page"],
+                    "boundary": spec["boundary"],
+                    "content_tokens": spec["content_token_count"],
+                    "overlap_tokens": len(spec["overlap_token_ids"]),
+                    "text": spec["text"][:320],
+                }
+                for index, spec in enumerate(chunk_specs[:8])
+            ]
+            self.emit(
+                job_id, "chunking", "completed",
+                input={"chunk_size": chunk_size, "overlap_tokens": overlap},
+                process="Prefer semantic structure boundaries; split oversized units by exact tokenizer windows and copy the configured overlap.",
+                output={"chunk_count": len(chunk_specs), "chunks": chunk_preview, "overlap_example": overlap_example},
+                chunk_count=len(chunk_specs), chunks=chunk_preview, overlap_example=overlap_example,
+            )
             self.emit(
                 job_id, "tokenization", "completed", token_count=total_tokens, chunk_count=len(chunk_specs),
+                input={"chunk_count": len(chunk_specs), "document_prefix": self.settings.embed_document_prefix},
+                process="Run the embedding model tokenizer on every exact prefixed chunk input.",
+                output={"document_tokens": total_tokens, "first_chunk_token_ids": chunk_specs[0]["token_ids"]},
                 token_preview=chunk_specs[0]["text"][:300], embedding_input=self.settings.embed_document_prefix + chunk_specs[0]["text"], token_ids=chunk_specs[0]["token_ids"],
                 token_scope="first exact embedding input", token_ids_truncated=len(chunk_specs) > 1,
                 document_prefix=self.settings.embed_document_prefix, boundaries=[spec["boundary"] for spec in chunk_specs[:20]],
             )
+            metadata_preview = [
+                {
+                    "document_id": document_id,
+                    "filename": document["filename"],
+                    "media_type": document["media_type"],
+                    "chunk_index": index,
+                    "page": spec["page"],
+                    "token_count": spec["token_count"],
+                    "boundary": spec["boundary"],
+                }
+                for index, spec in enumerate(chunk_specs[:8])
+            ]
             self.emit(
-                job_id,
-                "overlap",
+                job_id, "metadata",
                 "completed",
-                overlap_tokens=overlap,
-                example={
-                    "token_ids": chunk_specs[1]["overlap_token_ids"],
-                    "text": await self.llama.detokenize(chunk_specs[1]["overlap_token_ids"], "embedding") if chunk_specs[1]["overlap_token_ids"] else "",
-                    "from_chunk": 1, "into_chunk": 2,
-                } if len(chunk_specs) > 1 else None,
+                input={"chunks": len(chunk_specs), "document_id": document_id},
+                process="Attach source identity, page, chunk order, token count, media type, and boundary strategy to every chunk.",
+                output={"records": metadata_preview, "truncated": len(chunk_specs) > len(metadata_preview)},
+                records=metadata_preview,
             )
 
             self.emit(job_id, "embedding", "started", batches=(len(chunk_specs) + 15) // 16)
@@ -180,9 +244,17 @@ class Pipeline:
                 raise ValueError("Embedding server returned invalid vectors")
             array = array / norms[:, None]
             model_id, _, fingerprint = await self.embedding_identity()
-            self.emit(job_id, "embedding", "completed", dimensions=int(array.shape[1]), norm_min=float(norms.min()), norm_max=float(norms.max()), vector_preview=array[0, :12].round(6).tolist())
+            vector_points = self._project_embeddings(array)
+            self.emit(
+                job_id, "embedding", "completed",
+                input={"chunks": len(chunk_specs), "model_input_example": self.settings.embed_document_prefix + chunk_specs[0]["text"][:300]},
+                process="Embed chunks in batches, reject invalid tensors, then L2-normalize each vector for cosine search.",
+                output={"vectors": len(array), "dimensions": int(array.shape[1]), "first_vector_preview": array[0, :12].round(6).tolist()},
+                dimensions=int(array.shape[1]), norm_min=float(norms.min()), norm_max=float(norms.max()),
+                vector_preview=array[0, :12].round(6).tolist(), points=vector_points,
+            )
 
-            self.emit(job_id, "persistence", "started")
+            self.emit(job_id, "storage", "started")
             stored_chunks = []
             for index, (spec, vector) in enumerate(zip(chunk_specs, array, strict=True)):
                 stored_chunks.append(
@@ -198,7 +270,35 @@ class Pipeline:
                 status="ready", extracted_text=cleaned_text, chunk_count=len(stored_chunks), token_count=total_tokens,
                 model_id=model_id, embedding_dim=int(array.shape[1]), fingerprint=fingerprint, error=None,
             )
-            self.emit(job_id, "persistence", "completed", rows=len(stored_chunks), database="SQLite")
+            stored_records = [
+                {
+                    "id": chunk["id"],
+                    "document_id": document_id,
+                    "chunk_index": chunk["chunk_index"],
+                    "page": chunk["page"],
+                    "text": chunk["text"],
+                    "token_count": chunk["token_count"],
+                    "embedding_dimensions": int(array.shape[1]),
+                    "vector": array[index].round(8).tolist(),
+                }
+                for index, chunk in enumerate(stored_chunks)
+            ]
+            stored_record = stored_records[0]
+            self.emit(
+                job_id, "storage", "completed",
+                input={"records": len(stored_chunks), "vector_dimensions": int(array.shape[1])},
+                process="Atomically replace prior chunk rows and persist normalized float32 vectors with their source records.",
+                output={"rows_written": len(stored_chunks), "database": "SQLite local vector store", "dimensions_per_vector": int(array.shape[1])},
+                rows=len(stored_chunks), database="SQLite local vector store", stored_record=stored_record,
+                stored_records=stored_records,
+            )
+            self.emit(
+                job_id, "index", "completed",
+                input={"document_id": document_id, "stored_vectors": len(stored_chunks)},
+                process="Commit the document lookup index and expose the normalized vector matrix to exact cosine similarity search.",
+                output={"searchable": True, "lookup_index": "chunks_document_idx", "vector_index": "exact cosine scan"},
+                searchable=True, lookup_index="chunks_document_idx", vector_index="exact cosine scan",
+            )
             self.emit(job_id, "complete", "completed", duration_ms=round((time.perf_counter() - started) * 1000), chunks=len(stored_chunks), tokens=total_tokens, model=model_id)
         except Exception as exc:
             self.db.update_document(document_id, status="failed", error=str(exc))
@@ -395,6 +495,21 @@ class Pipeline:
                 **({"chunk_id": item["chunk_id"], "filename": item["filename"], "score": item["score"]} if item else {}),
             })
         return points
+
+    @staticmethod
+    def _project_embeddings(vectors: np.ndarray) -> list[dict[str, float | str]]:
+        centered = vectors - vectors.mean(axis=0)
+        if len(vectors) > 1:
+            u, singular, _ = np.linalg.svd(centered, full_matrices=False)
+            projection = u[:, :2] * singular[:2]
+            if projection.shape[1] == 1:
+                projection = np.column_stack([projection[:, 0], np.zeros(len(projection))])
+        else:
+            projection = np.zeros((1, 2))
+        return [
+            {"id": f"chunk-{index + 1}", "x": float(row[0]), "y": float(row[1])}
+            for index, row in enumerate(projection)
+        ]
 
     @staticmethod
     def _build_prompt(query: str, chunks: list[dict[str, Any]]) -> str:

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, FileText, Play, RotateCcw, Search, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react'
+import { BookOpen, FileText, PauseCircle, Play, PlayCircle, RotateCcw, Search, SlidersHorizontal, StepForward, Trash2, UploadCloud } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, subscribe } from '../api'
@@ -8,8 +8,10 @@ import { EventInspector } from './EventInspector'
 import { PipelineTimeline } from './PipelineTimeline'
 import { TokenEmbeddingGraph } from './TokenEmbeddingGraph'
 import { VectorPlot } from './VectorPlot'
+import { VectorStoreBrowser, type StoredVectorRecord } from './VectorStoreBrowser'
 
 export function RagExplorer() {
+  const [workflow, setWorkflow] = useState<'knowledge' | 'questions'>('knowledge')
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [selected, setSelected] = useState<string[]>([])
   const [events, setEvents] = useState<StageEvent[]>([])
@@ -24,8 +26,14 @@ export function RagExplorer() {
   const [autoFollow, setAutoFollow] = useState(true)
   const [error, setError] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [stepMode, setStepMode] = useState(true)
+  const [playbackPaused, setPlaybackPaused] = useState(false)
+  const [bufferedCount, setBufferedCount] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const autoFollowRef = useRef(true)
+  const stepModeRef = useRef(true)
+  const playbackPausedRef = useRef(false)
+  const bufferedEventsRef = useRef<StageEvent[]>([])
 
   const changeAutoFollow = (value: boolean) => {
     autoFollowRef.current = value
@@ -37,11 +45,6 @@ export function RagExplorer() {
     setActiveEvent(index)
   }
 
-  const resumeLive = () => {
-    changeAutoFollow(true)
-    setActiveEvent(Math.max(events.length - 1, 0))
-  }
-
   const refresh = async () => {
     const docs = await api.documents()
     setDocuments(docs)
@@ -49,21 +52,71 @@ export function RagExplorer() {
   }
   useEffect(() => { refresh().catch((err) => setError(err.message)) }, [])
 
-  const pushEvent = (event: StageEvent) => {
-    if (event.status === 'failed') {
-      setBusy(false)
-      setError(String(event.payload.message || `${event.stage.replaceAll('_', ' ')} failed`))
-    }
+  const showEvents = (incoming: StageEvent[]) => {
+    if (!incoming.length) return
     setEvents((current) => {
-      const next = [...current, event]
+      const next = [...current, ...incoming]
       if (autoFollowRef.current) setActiveEvent(next.length - 1)
       return next
     })
   }
 
+  const setPhasePaused = (value: boolean) => {
+    playbackPausedRef.current = value
+    setPlaybackPaused(value)
+  }
+
+  const resetPlayback = () => {
+    bufferedEventsRef.current = []
+    setBufferedCount(0)
+    setPhasePaused(false)
+  }
+
+  const pushEvent = (event: StageEvent) => {
+    if (event.status === 'failed') {
+      setBusy(false)
+      setError(String(event.payload.message || `${event.stage.replaceAll('_', ' ')} failed`))
+    }
+    if (stepModeRef.current && playbackPausedRef.current) {
+      bufferedEventsRef.current.push(event)
+      setBufferedCount(bufferedEventsRef.current.length)
+      return
+    }
+    showEvents([event])
+    if (stepModeRef.current && (event.status === 'completed' || event.status === 'failed')) setPhasePaused(true)
+  }
+
+  const revealNextPhase = () => {
+    setPhasePaused(false)
+    const next: StageEvent[] = []
+    while (bufferedEventsRef.current.length) {
+      const event = bufferedEventsRef.current.shift()!
+      next.push(event)
+      if (event.status === 'completed' || event.status === 'failed') break
+    }
+    setBufferedCount(bufferedEventsRef.current.length)
+    showEvents(next)
+    if (next.some((event) => event.status === 'completed' || event.status === 'failed')) setPhasePaused(true)
+  }
+
+  const resumeLive = () => {
+    stepModeRef.current = false
+    setStepMode(false)
+    setPhasePaused(false)
+    const pending = bufferedEventsRef.current.splice(0)
+    setBufferedCount(0)
+    showEvents(pending)
+  }
+
+  const enableStepMode = () => {
+    stepModeRef.current = true
+    setStepMode(true)
+    setPhasePaused(events.length > 0)
+  }
+
   async function upload(file?: File) {
     if (!file) return
-    setError(''); setEvents([]); setBusy(true); changeAutoFollow(true)
+    setError(''); setEvents([]); setBusy(true); changeAutoFollow(true); resetPlayback()
     try {
       const result = await api.upload(file, chunkSize, overlap)
       subscribe(`/api/jobs/${result.job_id}/events`, pushEvent, () => { setBusy(false); refresh() }, (message) => { setBusy(false); setError(message) })
@@ -73,7 +126,7 @@ export function RagExplorer() {
 
   async function runSearch() {
     if (!selected.length) return setError('Select at least one ready document.')
-    setError(''); setEvents([]); setBusy(true); changeAutoFollow(true)
+    setError(''); setEvents([]); setBusy(true); changeAutoFollow(true); resetPlayback()
     try {
       const result = await api.search({ query, document_ids: selected, top_k: topK, similarity_threshold: threshold, generate_answer: generate })
       subscribe(`/api/searches/${result.search_id}/events`, pushEvent, () => setBusy(false), (message) => { setBusy(false); setError(message) })
@@ -86,7 +139,7 @@ export function RagExplorer() {
   }
 
   async function reindex(id: string) {
-    setEvents([]); setBusy(true); setError(''); changeAutoFollow(true)
+    setEvents([]); setBusy(true); setError(''); changeAutoFollow(true); resetPlayback()
     try {
       const result = await api.reindex(id, chunkSize, overlap)
       subscribe(`/api/jobs/${result.job_id}/events`, pushEvent, () => { setBusy(false); refresh() }, (message) => { setBusy(false); setError(message) })
@@ -129,6 +182,18 @@ export function RagExplorer() {
   const budgetPercent = contextLimit ? Math.min(100, (promptTokens / contextLimit) * 100) : 0
   const reservePercent = contextLimit ? Math.min(100 - budgetPercent, (reservedTokens / contextLimit) * 100) : 0
   const removedForContext = (contextBudget?.removed_for_context || []) as string[]
+  const ingestionPoints = ([...events].reverse().find((event) => event.stage === 'embedding' && event.status === 'completed')?.payload.points || []) as ProjectionPoint[]
+  const storedRecord = [...events].reverse().find((event) => event.stage === 'storage' && event.status === 'completed')?.payload.stored_record
+  const storedRecords = ([...events].reverse().find((event) => event.stage === 'storage' && event.status === 'completed')?.payload.stored_records || (storedRecord ? [storedRecord] : [])) as StoredVectorRecord[]
+
+  const changeWorkflow = (next: 'knowledge' | 'questions') => {
+    if (next === workflow) return
+    setWorkflow(next)
+    setEvents([])
+    setActiveEvent(0)
+    setError('')
+    changeAutoFollow(true)
+  }
 
   return (
     <div className="workspace">
@@ -137,10 +202,19 @@ export function RagExplorer() {
         <div className="truth-label"><span /> Runtime data from your machine</div>
       </section>
 
+      <nav className="workflow-tabs" aria-label="RAG workflows">
+        <button className={workflow === 'knowledge' ? 'active' : ''} onClick={() => changeWorkflow('knowledge')} disabled={busy}>
+          <UploadCloud size={18} /><span><strong>Add knowledge</strong><small>Upload, chunk, and index documents</small></span>
+        </button>
+        <button className={workflow === 'questions' ? 'active' : ''} onClick={() => changeWorkflow('questions')} disabled={busy}>
+          <Search size={18} /><span><strong>Ask questions</strong><small>Retrieve sources and generate answers</small></span>
+        </button>
+      </nav>
+
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
       <div className="rag-layout">
         <aside className="control-panel">
-          <div className="panel-section">
+          {workflow === 'knowledge' && <div className="panel-section">
             <div className="section-title"><span>1</span><div><strong>Add knowledge</strong><small>PDF · TXT · MD, up to 20 MB</small></div></div>
             <button
               className={`drop-zone ${dragging ? 'dragging' : ''}`}
@@ -155,10 +229,10 @@ export function RagExplorer() {
               <label>Chunk size <output>{chunkSize} tokens</output><input type="range" min="32" max="1024" step="32" value={chunkSize} onChange={(e) => { const value=Number(e.target.value); setChunkSize(value); if(overlap>=value) setOverlap(Math.max(0,value-32)) }} /></label>
               <label>Overlap <output>{overlap} tokens</output><input type="range" min="0" max={Math.max(0, chunkSize - 1)} step="8" value={overlap} onChange={(e) => setOverlap(Number(e.target.value))} /></label>
             </details>
-          </div>
+          </div>}
 
           <div className="panel-section library">
-            <div className="section-title"><span>2</span><div><strong>Choose sources</strong><small>{documents.length} local document{documents.length === 1 ? '' : 's'}</small></div></div>
+            <div className="section-title"><span>{workflow === 'knowledge' ? '2' : '1'}</span><div><strong>{workflow === 'knowledge' ? 'Knowledge library' : 'Choose sources'}</strong><small>{documents.length} local document{documents.length === 1 ? '' : 's'}</small></div></div>
             {!documents.length && <div className="quiet-empty"><BookOpen size={20} />Your indexed documents will appear here.</div>}
             {documents.map((doc) => <article className={`document-row ${selected.includes(doc.id) ? 'selected' : ''}`} key={doc.id}>
               <button className="document-select" disabled={doc.status !== 'ready'} onClick={() => setSelected((value) => value.includes(doc.id) ? value.filter((id) => id !== doc.id) : [...value, doc.id])}>
@@ -169,21 +243,37 @@ export function RagExplorer() {
             </article>)}
           </div>
 
-          <div className="panel-section">
-            <div className="section-title"><span>3</span><div><strong>Ask your library</strong><small>Search, inspect, then generate</small></div></div>
+          {workflow === 'questions' && <div className="panel-section">
+            <div className="section-title"><span>2</span><div><strong>Ask your library</strong><small>Search, inspect, then generate</small></div></div>
             <textarea value={query} onChange={(e) => setQuery(e.target.value)} rows={4} />
             <div className="inline-controls"><label>Top K<input type="number" min="1" max="20" value={topK} onChange={(e) => setTopK(Number(e.target.value))} /></label><label>Min score<input type="number" min="-1" max="1" step="0.05" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} /></label></div>
             <label className="switch"><input type="checkbox" checked={generate} onChange={(e) => setGenerate(e.target.checked)} /><span />Generate a cited answer</label>
             <button className="primary-button" onClick={runSearch} disabled={busy || !query.trim()}><Search size={17} />{busy ? 'Pipeline running…' : 'Run the pipeline'}</button>
-          </div>
+          </div>}
         </aside>
 
         <main className="process-canvas">
-          <div className="process-top"><div><span className="eyebrow">Live execution trace</span><h3>What is happening?</h3></div>{events.length > 0 && <div className="trace-actions"><span className="event-count">{events.length} events recorded</span>{!autoFollow && <button className="resume-live" onClick={resumeLive}>{busy ? 'Resume live updates' : 'Jump to latest'}</button>}</div>}</div>
+          <div className="process-top"><div><span className="eyebrow">Live execution trace</span><h3>{workflow === 'knowledge' ? 'Knowledge ingestion' : 'Question answering'}</h3></div><div className="trace-actions">
+            <div className="playback-mode" aria-label="Pipeline playback mode">
+              <button className={stepMode ? 'active' : ''} onClick={enableStepMode}><PauseCircle size={13} />Step mode</button>
+              <button className={!stepMode ? 'active' : ''} onClick={resumeLive}><PlayCircle size={13} />Live</button>
+            </div>
+            {stepMode && playbackPaused && <button className="next-phase" onClick={revealNextPhase}><StepForward size={13} />Next phase{bufferedCount ? ` · ${bufferedCount} buffered` : ''}</button>}
+            {events.length > 0 && <span className="event-count">{events.length} visible</span>}
+            {!autoFollow && <button className="resume-live" onClick={() => { changeAutoFollow(true); setActiveEvent(Math.max(events.length - 1, 0)) }}>Jump to latest</button>}
+          </div></div>
           <div className="process-grid">
             <PipelineTimeline events={events} active={activeEvent} onSelect={inspectEvent} />
             <EventInspector event={latest} events={events} activeIndex={activeEvent} onSelect={inspectEvent} />
           </div>
+          {workflow === 'knowledge' && ingestionPoints.length > 0 && <section className="ingestion-artifact">
+            <header><div><span className="eyebrow">Embedding output</span><h3>Vector space projection</h3></div><small>PCA-style 2D projection of real stored vectors</small></header>
+            <VectorPlot points={ingestionPoints} />
+          </section>}
+          {workflow === 'knowledge' && storedRecords.length > 0 && <section className="stored-record">
+            <header><div><span className="eyebrow">Vector database</span><h3>All stored vector records</h3></div><small>{storedRecords.length} records · scroll to inspect more</small></header>
+            <VectorStoreBrowser records={storedRecords} />
+          </section>}
           {graphTokens.length > 0 && graphVector.length > 0 && <TokenEmbeddingGraph
             tokenIds={graphTokens} input={graphInput} vector={graphVector} dimensions={graphDimensions}
             rawClsVector={rawClsVector} rawClsNorm={Number(graphVectorEvent?.payload.raw_cls_norm || 0)}

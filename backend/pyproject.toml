@@ -16,8 +16,11 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<1"]
 
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "tests*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-

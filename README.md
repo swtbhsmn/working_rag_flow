@@ -2,6 +2,16 @@
 
 A local-first teaching interface that makes document ingestion, embeddings, vector search, RAG prompt construction, generation, and transformer concepts visible. React renders the learning workspaces, FastAPI records real pipeline events, SQLite stores local documents and vectors, and two existing `llama-server` processes provide embeddings and chat generation.
 
+## Knowledge ingestion visualizer
+
+The **Add knowledge** workspace follows an uploaded file through the complete searchable-knowledge lifecycle:
+
+`Upload → Validate → Extract → Clean → Detect structure → Chunk with overlap → Tokenize → Enrich metadata → Embed → Store → Index`
+
+Step mode pauses after every completed phase. Use **Next phase** to reveal the next buffered phase, or **Live** to resume the real-time event stream. Selecting any stage exposes its input, process, and output. The embedding phase includes every chunk in a two-dimensional vector projection. The storage phase exposes every stored chunk in a vertically virtualized list, and every complete embedding from `d0` through its final dimension in a horizontally virtualized strip.
+
+The interface reports the actual implementation: vectors and metadata are stored in SQLite and searched with an exact cosine scan. The index event therefore describes lookup indexes and search readiness without claiming an approximate-nearest-neighbor index that is not present.
+
 ## Prerequisites
 
 - Python 3.11+

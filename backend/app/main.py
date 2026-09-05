@@ -118,6 +118,14 @@ async def upload_document(
         }
     )
     db.create_job(job_id, "ingestion", document_id)
+    pipeline.emit(
+        job_id,
+        "upload",
+        "completed",
+        input={"filename": Path(file.filename or f"document{suffix}").name, "bytes": len(content)},
+        process="Stream the multipart upload, enforce the size limit, verify the extension and file signature, then save an opaque local copy.",
+        output={"document_id": document_id, "media_type": ALLOWED_SUFFIXES[suffix], "accepted": True},
+    )
     background.add_task(pipeline.process_document, document_id, job_id)
     return JobCreated(document_id=document_id, job_id=job_id)
 

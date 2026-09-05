@@ -27,7 +27,10 @@ export function EventInspector({ event, events = [], activeIndex, onSelect }: { 
   if (!event) return <div className="empty-inspector">Run or replay a pipeline to inspect its real inputs and outputs.</div>
   const relatedIndexes = events.map((item, index) => item.stage === event.stage ? index : -1).filter((index) => index >= 0)
   const updatePosition = activeIndex === undefined ? -1 : relatedIndexes.indexOf(activeIndex)
-  const payloadEntries = Object.entries(event.payload).sort(([leftKey, leftValue], [rightKey, rightValue]) => Number(usesFullWidth(leftKey, leftValue)) - Number(usesFullWidth(rightKey, rightValue)))
+  const payloadEntries = Object.entries(event.payload)
+    .filter(([key]) => !['input', 'process', 'output', 'stored_record', 'stored_records'].includes(key))
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => Number(usesFullWidth(leftKey, leftValue)) - Number(usesFullWidth(rightKey, rightValue)))
+  const hasProcessContract = ['input', 'process', 'output'].every((key) => key in event.payload)
   return (
     <article className="inspector">
       <header><span className="eyebrow">Stage {event.sequence}</span><h3>{event.stage.replaceAll('_', ' ')}</h3><span className={`badge ${event.status}`}>{event.status}</span></header>
@@ -35,6 +38,11 @@ export function EventInspector({ event, events = [], activeIndex, onSelect }: { 
         <button disabled={updatePosition === 0} onClick={() => onSelect?.(relatedIndexes[updatePosition - 1])} aria-label="Previous stage update"><ChevronLeft size={14} /></button>
         <label><span>Update {updatePosition + 1} of {relatedIndexes.length}</span><input type="range" min="0" max={relatedIndexes.length - 1} value={updatePosition} onChange={(change) => onSelect?.(relatedIndexes[Number(change.target.value)])} /></label>
         <button disabled={updatePosition === relatedIndexes.length - 1} onClick={() => onSelect?.(relatedIndexes[updatePosition + 1])} aria-label="Next stage update"><ChevronRight size={14} /></button>
+      </div>}
+      {hasProcessContract && <div className="stage-io" aria-label="Stage input, process, and output">
+        {(['input', 'process', 'output'] as const).map((key) => <section key={key} className={`stage-io-card ${key}`}>
+          <small>{key}</small><pre>{renderValue(event.payload[key])}</pre>
+        </section>)}
       </div>}
       <div className="payload-grid">
         {payloadEntries.map(([key, value]) => (

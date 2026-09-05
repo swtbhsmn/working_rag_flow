@@ -108,7 +108,17 @@ async def test_real_pipeline_events_with_mocked_llama(tmp_path: Path):
     stages = [event["stage"] for event in db.events_after(ingest_job, 0)]
     assert stages[0] == "validation"
     assert stages[-1] == "complete"
-    assert {"extraction", "tokenization", "embedding", "persistence"}.issubset(stages)
+    assert {"extraction", "cleaning", "structure", "chunking", "tokenization", "metadata", "embedding", "storage", "index"}.issubset(stages)
+    completed = [event for event in db.events_after(ingest_job, 0) if event["status"] == "completed" and event["stage"] != "complete"]
+    assert all({"input", "process", "output"}.issubset(event["payload"]) for event in completed)
+    embedding_event = next(event for event in completed if event["stage"] == "embedding")
+    assert embedding_event["payload"]["points"]
+    storage_event = next(event for event in completed if event["stage"] == "storage")
+    assert len(storage_event["payload"]["stored_record"]["vector"]) == 3
+    assert len(storage_event["payload"]["stored_records"]) == db.document(document_id)["chunk_count"]
+    assert all(len(record["vector"]) == record["embedding_dimensions"] for record in storage_event["payload"]["stored_records"])
+    index_event = next(event for event in completed if event["stage"] == "index")
+    assert index_event["payload"]["searchable"] is True
     token_event = next(event for event in db.events_after(ingest_job, 0) if event["stage"] == "tokenization" and event["status"] == "completed")
     assert bytes(token_event["payload"]["token_ids"]).startswith(b"passage: ")
     assert max(chunk["token_count"] for chunk in db.chunks_for([document_id])) <= 64

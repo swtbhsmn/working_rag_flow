@@ -4,8 +4,10 @@ import { Check, Circle, LoaderCircle, X } from 'lucide-react'
 import type { StageEvent } from '../types'
 
 const labels: Record<string, string> = {
-  validation: 'Validate file', extraction: 'Extract text', cleaning: 'Clean text', segmentation: 'Find structure',
-  tokenization: 'Tokenize', overlap: 'Add overlap', embedding: 'Create vectors', persistence: 'Store locally',
+  upload: 'Upload file', validation: 'Validate file', extraction: 'Extract text', cleaning: 'Clean text',
+  structure: 'Detect structure', segmentation: 'Detect structure', chunking: 'Chunk + overlap',
+  tokenization: 'Tokenize chunks', overlap: 'Add overlap', metadata: 'Enrich metadata',
+  embedding: 'Create vectors', storage: 'Store vectors', persistence: 'Store vectors', index: 'Build search index',
   query_normalization: 'Normalize query', query_tokenization: 'Tokenize query', query_embedding: 'Embed query',
   comparison: 'Compare vectors', selection: 'Select context', projection: 'Project space', prompt: 'Build prompt',
   prompt_budget: 'Fit context window',
