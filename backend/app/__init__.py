@@ -1,0 +1,2 @@
+"""Local RAG visualizer API."""
+

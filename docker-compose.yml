@@ -1,0 +1,31 @@
+services:
+  api:
+    build: ./backend
+    environment:
+      LLAMA_EMBED_BASE_URL: ${LLAMA_EMBED_BASE_URL:-http://host.docker.internal:8081}
+      LLAMA_TOKEN_EMBED_BASE_URL: ${LLAMA_TOKEN_EMBED_BASE_URL:-http://host.docker.internal:8082}
+      LLAMA_CHAT_BASE_URL: ${LLAMA_CHAT_BASE_URL:-http://host.docker.internal:8080}
+      LLAMA_EMBED_API_KEY: ${LLAMA_EMBED_API_KEY:-}
+      LLAMA_TOKEN_EMBED_API_KEY: ${LLAMA_TOKEN_EMBED_API_KEY:-}
+      LLAMA_CHAT_API_KEY: ${LLAMA_CHAT_API_KEY:-}
+      LLAMA_EMBED_MODEL: ${LLAMA_EMBED_MODEL:-}
+      LLAMA_CHAT_MODEL: ${LLAMA_CHAT_MODEL:-}
+      EMBED_DOCUMENT_PREFIX: ${EMBED_DOCUMENT_PREFIX:-}
+      EMBED_QUERY_PREFIX: ${EMBED_QUERY_PREFIX:-}
+      CHAT_CONTEXT_TOKENS: ${CHAT_CONTEXT_TOKENS:-4096}
+      ANSWER_MAX_TOKENS: ${ANSWER_MAX_TOKENS:-384}
+      TOKEN_EMBEDDING_DIMENSIONS: ${TOKEN_EMBEDDING_DIMENSIONS:-384}
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8088
+    volumes:
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "8088:80"
